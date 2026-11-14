@@ -1,8 +1,278 @@
 ---
-title: "ST542 Final Rewilding Project"
+title: "Rewilding Project: Statistical Analysis Tutorial"
+subtitle: "A Reproducible R Tutorial Using Simulated Data"
 author: "Ryan Mersereau, Jacob Britt"
-format: html
-editor: visual
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    number-sections: true
+execute:
+  warning: false
+  message: false
 ---
 
-# Rewilding Final Project Code
+# Introduction
+
+## Project Background
+
+This tutorial provides a reproducible statistical analysis workflow for the rewilding project at Long Creek Park in Winston-Salem, North Carolina.
+
+The project aims to investigate whether increasing native plant diversity through rewilding is associated with changes in insect biodiversity and pollinator activity.
+
+Because post-rewilding data collection has not yet begun, this tutorial uses simulated data designed to resemble the anticipated study structure. Once actual observations are collected, the simulated dataset can be replaced with the observed data.
+
+## Research Objectives
+
+The primary objectives are:
+
+1.  Evaluate whether insect biodiversity differs between rewilded and control plots.
+2.  Evaluate whether pollinator visitation differs between rewilded and control plots.
+
+A secondary objective is to investigate whether plots with greater plant diversity also exhibit greater insect diversity or pollinator visitation.
+
+## Statistical Analysis Overview
+
+Two primary statistical approaches will be demonstrated:
+
+1.  **Insect biodiversity:** A linear mixed-effects model will be used to analyze Shannon's diversity index.
+2.  **Pollinator visitation:** A negative binomial generalized linear mixed-effects model will be used to analyze pollinator visitation counts.
+
+Both approaches will account for repeated observations of the same plots over time.
+
+The tutorial includes data preparation, exploratory visualization, statistical modeling, model diagnostics, and interpretation of results.
+
+**Important:** All results produced using the simulated dataset are illustrative and should not be interpreted as findings from the actual rewilding study.
+
+```{r}
+
+#| label: setup
+
+library(tidyverse)    # Data manipulation and visualization
+library(vegan)        # Shannon diversity index
+library(lme4)         # Linear mixed-effects models
+library(glmmTMB)      # Negative binomial mixed-effects models
+library(emmeans)      # Estimated marginal means and comparisons
+library(DHARMa)       # Model diagnostics
+
+```
+
+# Simulated Data
+
+Since post-rewilding observations will not be available until 2027, we first generate simulated data that reflect the anticipated study design.
+
+The simulated study includes:
+
+- 10 permanent sampling plots (5 planted and 5 unplanted no-mow).
+- 5 spatially corresponding plot pairs.
+- 26 weekly observations from May through October 2027.
+- Observation durations ranging from 10 to 12 minutes.
+- Pollinator visitation counts, insect observations, and open-flower counts.
+
+The simulated counts incorporate seasonal variation, differences between plots, and additional variability commonly observed in ecological count data.
+
+For illustration, the simulation assumes greater expected pollinator visitation and a more even distribution of insect taxa in planted plots. These assumptions are not estimates from the actual study.
+
+```{r}
+
+#| label: simulate-data
+
+set.seed(123)
+
+# Create five paired plots across the two study areas
+plots <- tidyr::crossing(
+  pair_id = 1:5,
+  treatment = c("No-mow", "Planted")
+) |>
+  mutate(
+    plot_id = sprintf(
+      "%s_%02d",
+      if_else(treatment == "Planted", "P", "C"),
+      pair_id
+    ),
+    area = if_else(
+      treatment == "Planted", "West", "East"
+    ),
+    plot_effect = rnorm(n(), mean = 0, sd = 0.35)
+  )
+
+# Create 26 weekly survey dates
+weeks <- tibble(
+  week = 1:26,
+  date = seq(
+    as.Date("2027-05-03"),
+    by = "week",
+    length.out = 26
+  )
+)
+
+# Combine plots and sampling weeks
+survey_data <- tidyr::crossing(plots, weeks) |>
+  mutate(
+    month = format(date, "%Y-%m"),
+    observation_minutes = sample(
+      10:12, n(), replace = TRUE
+    ),
+    season = sin(pi * (week - 1) / 25),
+
+    # Simulate open-flower abundance
+    open_flowers = rpois(
+      n(),
+      lambda = if_else(
+        treatment == "Planted", 45, 18
+      ) * (0.5 + season)
+    ),
+
+    # Expected pollinator visits per observation
+    expected_visits = observation_minutes / 10 *
+      exp(
+        log(3.5) +
+        log(1.7) * (treatment == "Planted") +
+        0.6 * season +
+        plot_effect
+      ),
+
+    # Generate overdispersed visitation counts
+    pollinator_visits = rnbinom(
+      n(),
+      mu = expected_visits,
+      size = 2
+    ),
+
+    # Expected number of insects observed
+    expected_insects = observation_minutes / 10 *
+      exp(
+        log(4) +
+        log(1.4) * (treatment == "Planted") +
+        0.5 * season +
+        plot_effect
+      ),
+
+    total_insects = rnbinom(
+      n(),
+      mu = expected_insects,
+      size = 4
+    )
+  ) |>
+  select(
+    plot_id, pair_id, area, treatment,
+    week, date, month, observation_minutes,
+    open_flowers, pollinator_visits,
+    total_insects
+  )
+
+# Inspect the simulated data
+head(survey_data)
+
+```
+
+## Simulating Insect Abundance
+
+Shannon's diversity index requires information about both the number of observed taxa and their relative abundances.
+
+We simulate insect abundance across eight hypothetical taxa. The relative abundance distributions differ between planted and no-mow plots to illustrate how differences in insect community composition may affect Shannon diversity.
+
+The taxon labels and their relative abundances are illustrative. Actual diversity calculations will depend on the taxonomic resolution and insect observations available from the field surveys.
+
+```{r}
+
+#| label: simulate-insects
+
+# Hypothetical insect taxa
+taxa <- sprintf("Taxon_%02d", 1:8)
+
+# Relative abundance probabilities
+prob_planted <- c(
+  0.25, 0.18, 0.14, 0.12,
+  0.10, 0.09, 0.07, 0.05
+)
+
+prob_control <- c(
+  0.45, 0.25, 0.12, 0.08,
+  0.05, 0.03, 0.015, 0.005
+)
+
+# Allocate observed insects among taxa
+insect_data <- purrr::map_dfr(
+  seq_len(nrow(survey_data)),
+  function(i) {
+
+    visit <- survey_data[i, ]
+
+    probabilities <- if (
+      visit$treatment == "Planted"
+    ) prob_planted else prob_control
+
+    counts <- as.vector(rmultinom(
+      1,
+      size = visit$total_insects,
+      prob = probabilities
+    ))
+
+    tibble(
+      plot_id = visit$plot_id,
+      date = visit$date,
+      month = visit$month,
+      treatment = visit$treatment,
+      taxon = taxa,
+      count = counts
+    )
+  }
+) |>
+  filter(count > 0)
+
+# Inspect the insect observations
+head(insect_data)
+
+```
+
+```{r}
+
+#| label: save-simulated-data
+
+# Create a data directory
+dir.create("data", showWarnings = FALSE)
+
+# Save simulated datasets
+write_csv(
+  survey_data,
+  "data/simulated_survey_data.csv"
+)
+
+write_csv(
+  insect_data,
+  "data/simulated_insect_data.csv"
+)
+
+# Verify the dimensions
+dim(survey_data)
+dim(insect_data)
+
+# Confirm unique visits and count consistency
+survey_data |>
+  summarise(
+    n_plots = n_distinct(plot_id),
+    n_visits = n(),
+    n_weeks = n_distinct(week)
+  )
+
+insect_data |>
+  group_by(plot_id, date) |>
+  summarise(
+    taxon_total = sum(count),
+    .groups = "drop"
+  ) |>
+  right_join(
+    survey_data |>
+      select(plot_id, date, total_insects),
+    by = c("plot_id", "date")
+  ) |>
+  mutate(taxon_total = replace_na(taxon_total, 0)) |>
+  summarise(
+    all_counts_match = all(
+      taxon_total == total_insects
+    )
+  )
+
+```
