@@ -1,0 +1,9 @@
+---
+title: "ST542 Final Rewilding Project"
+author: "Ryan Mersereau, Jacob Britt"
+format: html
+editor: visual
+---
+
+# Rewilding Final Project Code
+
