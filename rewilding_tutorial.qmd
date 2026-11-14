@@ -6,4 +6,3 @@ editor: visual
 ---
 
 # Rewilding Final Project Code
-
