@@ -1,9 +1,9 @@
 ---
 title: "Rewilding Project: Statistical Analysis Tutorial"
 subtitle: "A Reproducible R Tutorial Using Simulated Data"
-author: "Ryan Mersereau, Jacob Britt"
+author: "Ryan and Jacob"
 format:
-  html:
+  pdf:
     toc: true
     toc-depth: 3
     code-fold: false
@@ -13,217 +13,346 @@ execute:
   message: false
 ---
 
-# Introduction
+# Introduction and Research Objectives
 
 ## Project Background
 
 This tutorial provides a reproducible statistical analysis workflow for the rewilding project at Long Creek Park in Winston-Salem, North Carolina.
 
-The project aims to investigate whether increasing native plant diversity through rewilding is associated with changes in insect biodiversity and pollinator activity.
+The study compares five plots planted with native Piedmont species (active rewilding) with five unplanted no-mow plots (passive rewilding). The plots will be surveyed approximately weekly from May through October 2027.
 
-Because post-rewilding data collection has not yet begun, this tutorial uses simulated data designed to resemble the anticipated study structure. Once actual observations are collected, the simulated dataset can be replaced with the observed data.
+## Research Questions
 
-## Research Objectives
+The primary research questions are:
 
-The primary objectives are:
+1.  Do planted plots support greater insect biodiversity than unplanted no-mow plots?
+2.  Do planted plots receive more pollinator visits than unplanted no-mow plots?
 
-1.  Evaluate whether insect biodiversity differs between rewilded and control plots.
-2.  Evaluate whether pollinator visitation differs between rewilded and control plots.
+A secondary analysis will investigate whether differences in pollinator visitation remain after accounting for open-flower abundance.
 
-A secondary objective is to investigate whether plots with greater plant diversity also exhibit greater insect diversity or pollinator visitation.
+## Planned Statistical Methods
 
-## Statistical Analysis Overview
+Pollinator visitation counts will be analyzed using a Poisson generalized linear mixed-effects model (GLMM), with a negative binomial GLMM used when overdispersion is present.
 
-Two primary statistical approaches will be demonstrated:
+Insect biodiversity will be summarized using Shannon's diversity index, calculated by pooling insect observations within each plot and month. These diversity measurements will be analyzed using a linear mixed-effects model (LMM).
 
-1.  **Insect biodiversity:** A linear mixed-effects model will be used to analyze Shannon's diversity index.
-2.  **Pollinator visitation:** A negative binomial generalized linear mixed-effects model will be used to analyze pollinator visitation counts.
+Both models will include plot-specific random intercepts to account for repeated observations.
 
-Both approaches will account for repeated observations of the same plots over time.
+Because planting status is confounded with management area, the analyses characterize differences between the two specific areas rather than establishing a causal effect of native planting.
 
-The tutorial includes data preparation, exploratory visualization, statistical modeling, model diagnostics, and interpretation of results.
+All results in this tutorial are based on simulated data and are intended only to demonstrate the planned statistical analysis workflow.
 
-**Important:** All results produced using the simulated dataset are illustrative and should not be interpreted as findings from the actual rewilding study.
+If you don't have packages run this in a code chunk:
+
+install.packages(c( "tidyverse", "vegan", "lme4", "glmmTMB", "emmeans", "DHARMa", "performance", "broom.mixed", "patchwork", "iNEXT" ))
+
+```{r}
+#install.packages(c( "tidyverse", "vegan", "lme4", "glmmTMB", "emmeans", "DHARMa", "performance", "broom.mixed", "patchwork", "iNEXT" ))
+```
 
 ```{r}
 
 #| label: setup
+#| message: false
+#| warning: false
 
-library(tidyverse)    # Data manipulation and visualization
-library(vegan)        # Shannon diversity index
-library(lme4)         # Linear mixed-effects models
-library(glmmTMB)      # Negative binomial mixed-effects models
-library(emmeans)      # Estimated marginal means and comparisons
-library(DHARMa)       # Model diagnostics
+# Data manipulation, simulation, and visualization
+library(tidyverse)
+
+# Biodiversity calculations
+library(vegan)
+library(iNEXT)
+
+# Statistical models
+library(lme4)
+library(glmmTMB)
+library(emmeans)
+
+# Model diagnostics
+library(DHARMa)
+library(performance)
+
+# Model results and visualization
+library(broom.mixed)
+library(patchwork)
 
 ```
 
-# Simulated Data
+## 
 
-Since post-rewilding observations will not be available until 2027, we first generate simulated data that reflect the anticipated study design.
+## Simulation Parameters
 
-The simulated study includes:
+We begin by defining the parameters used to generate the simulated observations.
 
-- 10 permanent sampling plots (5 planted and 5 unplanted no-mow).
-- 5 spatially corresponding plot pairs.
-- 26 weekly observations from May through October 2027.
-- Observation durations ranging from 10 to 12 minutes.
-- Pollinator visitation counts, insect observations, and open-flower counts.
+The data-generating process is based on the proposed statistical models in the Statistical Analysis Plan. Pollinator visitation and insect abundance are modeled using negative binomial distributions, while plot-specific random effects follow a normal distribution.
 
-The simulated counts incorporate seasonal variation, differences between plots, and additional variability commonly observed in ecological count data.
+The numerical values below are illustrative and are not estimated from the actual study. They were selected to produce plausible ecological count data while demonstrating the planned analysis.
 
-For illustration, the simulation assumes greater expected pollinator visitation and a more even distribution of insect taxa in planted plots. These assumptions are not estimates from the actual study.
+Keeping these parameters together makes it easier to explore alternative assumptions in the subsequent simulation-based power and precision assessment.
 
 ```{r}
 
-#| label: simulate-data
+#| label: simulation-parameters
 
-set.seed(123)
+sim_params <- list(
 
-# Create five paired plots across the two study areas
-plots <- tidyr::crossing(
-  pair_id = 1:5,
-  treatment = c("No-mow", "Planted")
-) |>
-  mutate(
-    plot_id = sprintf(
-      "%s_%02d",
-      if_else(treatment == "Planted", "P", "C"),
-      pair_id
-    ),
-    area = if_else(
-      treatment == "Planted", "West", "East"
-    ),
-    plot_effect = rnorm(n(), mean = 0, sd = 0.35)
-  )
+  # Study design
+  n_pairs = 5,
+  n_weeks = 26,
+  min_duration = 10,
+  max_duration = 12,
 
-# Create 26 weekly survey dates
-weeks <- tibble(
-  week = 1:26,
-  date = seq(
-    as.Date("2027-05-03"),
-    by = "week",
-    length.out = 26
-  )
+  # Pollinator visitation parameters
+  baseline_visits = 3.5,
+  visitation_rr = 1.7,
+  visit_dispersion = 2,
+
+  # Between-plot variability
+  plot_sd = 0.35,
+
+  # Insect abundance parameters
+  baseline_insects = 4,
+  insect_rr = 1.4,
+  insect_dispersion = 4,
+
+  # Flower abundance parameters
+  flowers_control = 18,
+  flowers_planted = 45,
+  flower_dispersion = 8,
+
+  # Seasonal effects
+  visit_season_effect = 0.6,
+  insect_season_effect = 0.5
 )
 
-# Combine plots and sampling weeks
-survey_data <- tidyr::crossing(plots, weeks) |>
-  mutate(
-    month = format(date, "%Y-%m"),
-    observation_minutes = sample(
-      10:12, n(), replace = TRUE
-    ),
-    season = sin(pi * (week - 1) / 25),
 
-    # Simulate open-flower abundance
-    open_flowers = rpois(
-      n(),
-      lambda = if_else(
-        treatment == "Planted", 45, 18
-      ) * (0.5 + season)
-    ),
+```
 
-    # Expected pollinator visits per observation
-    expected_visits = observation_minutes / 10 *
-      exp(
-        log(3.5) +
-        log(1.7) * (treatment == "Planted") +
-        0.6 * season +
-        plot_effect
-      ),
+## Generating Simulated Observations
 
-    # Generate overdispersed visitation counts
-    pollinator_visits = rnbinom(
-      n(),
-      mu = expected_visits,
-      size = 2
-    ),
+We now construct a function that generates simulated observations for a specified study design.
 
-    # Expected number of insects observed
-    expected_insects = observation_minutes / 10 *
-      exp(
-        log(4) +
-        log(1.4) * (treatment == "Planted") +
-        0.5 * season +
-        plot_effect
-      ),
+The function first creates the permanent sampling plots and weekly survey dates. It then generates plot-level variation, seasonal patterns, flower counts, pollinator visits, and insect abundance.
 
-    total_insects = rnbinom(
-      n(),
-      mu = expected_insects,
-      size = 4
-    )
+Pollinator visitation counts follow a negative binomial distribution with a log-linear expected count. Observation duration is incorporated into the expected count so that longer surveys are expected to record more visits.
+
+The function also allocates observed insects among hypothetical taxa using a multinomial distribution. These taxon-specific counts will later be used to calculate Shannon diversity.
+
+The function returns two linked datasets: one containing weekly plot-level observations and another containing insect taxon counts.
+
+```{r}
+
+#| label: simulation-function
+
+simulate_rewilding <- function(params, seed = NULL) {
+
+  if (!is.null(seed)) set.seed(seed)
+
+  # ----------------------------------
+  # 1. Create permanent sampling plots
+  # ----------------------------------
+
+  plots <- tidyr::crossing(
+    pair_id = seq_len(params$n_pairs),
+    treatment = c("No-mow", "Planted")
   ) |>
-  select(
-    plot_id, pair_id, area, treatment,
-    week, date, month, observation_minutes,
-    open_flowers, pollinator_visits,
-    total_insects
+    mutate(
+      treatment = factor(
+        treatment,
+        levels = c("No-mow", "Planted")
+      ),
+      plot_id = sprintf(
+        "%s_%02d",
+        if_else(treatment == "Planted", "P", "C"),
+        pair_id
+      ),
+      area = if_else(
+        treatment == "Planted", "West", "East"
+      ),
+      plot_effect = rnorm(
+        n(), mean = 0, sd = params$plot_sd
+      )
+    )
+
+  # ----------------------------------
+  # 2. Create weekly survey dates
+  # ----------------------------------
+
+  weeks <- tibble(
+    week = seq_len(params$n_weeks),
+    date = seq(
+      as.Date("2027-05-03"),
+      by = "week",
+      length.out = params$n_weeks
+    )
   )
 
-# Inspect the simulated data
+  # ----------------------------------
+  # 3. Generate weekly observations
+  # ----------------------------------
+
+  survey_data <- tidyr::crossing(plots, weeks) |>
+    mutate(
+
+      month = format(date, "%Y-%m"),
+
+      observation_minutes = sample(
+        params$min_duration:params$max_duration,
+        n(),
+        replace = TRUE
+      ),
+
+      # Seasonal pattern: higher activity
+      # near the middle of the season
+      season = sin(
+        pi * (week - 1) / (params$n_weeks - 1)
+      ),
+
+      # Expected open-flower count
+      expected_flowers = if_else(
+        treatment == "Planted",
+        params$flowers_planted,
+        params$flowers_control
+      ) * (0.5 + season),
+
+      open_flowers = rnbinom(
+        n(),
+        mu = expected_flowers,
+        size = params$flower_dispersion
+      ),
+
+      # Expected pollinator visitation
+      log_expected_visits =
+        log(params$baseline_visits) +
+        log(params$visitation_rr) *
+          (treatment == "Planted") +
+        params$visit_season_effect * season +
+        plot_effect +
+        log(observation_minutes / 10),
+
+      expected_visits = exp(log_expected_visits),
+
+      pollinator_visits = rnbinom(
+        n(),
+        mu = expected_visits,
+        size = params$visit_dispersion
+      ),
+
+      # Expected insect abundance
+      log_expected_insects =
+        log(params$baseline_insects) +
+        log(params$insect_rr) *
+          (treatment == "Planted") +
+        params$insect_season_effect * season +
+        plot_effect +
+        log(observation_minutes / 10),
+
+      expected_insects = exp(log_expected_insects),
+
+      total_insects = rnbinom(
+        n(),
+        mu = expected_insects,
+        size = params$insect_dispersion
+      )
+    ) |>
+    select(
+      plot_id, pair_id, area, treatment,
+      week, date, month, season,
+      observation_minutes, open_flowers,
+      pollinator_visits, total_insects
+    )
+
+  # ----------------------------------
+  # 4. Generate insect taxon counts
+  # ----------------------------------
+
+  taxa <- sprintf("Taxon_%02d", 1:8)
+
+  # Illustrative taxon probabilities
+  prob_planted <- c(
+    0.25, 0.18, 0.14, 0.12,
+    0.10, 0.09, 0.07, 0.05
+  )
+
+  prob_control <- c(
+    0.45, 0.25, 0.12, 0.08,
+    0.05, 0.03, 0.015, 0.005
+  )
+
+  insect_data <- purrr::map_dfr(
+    seq_len(nrow(survey_data)),
+    function(i) {
+
+      visit <- survey_data[i, ]
+
+      probabilities <- if (
+        visit$treatment == "Planted"
+      ) prob_planted else prob_control
+
+      counts <- as.vector(
+        rmultinom(
+          1,
+          size = visit$total_insects,
+          prob = probabilities
+        )
+      )
+
+      tibble(
+        plot_id = visit$plot_id,
+        date = visit$date,
+        month = visit$month,
+        treatment = visit$treatment,
+        taxon = taxa,
+        count = counts
+      )
+    }
+  ) |>
+    filter(count > 0)
+
+  # Return both datasets
+  list(
+    survey = survey_data,
+    insects = insect_data
+  )
+}
+
+```
+
+## Generate the Example Dataset
+
+We use the simulation function to generate one example dataset based on the proposed study design.
+
+The random seed is fixed to ensure that the results are reproducible.
+
+This dataset will be used throughout the tutorial to demonstrate data cleaning, exploratory analysis, Shannon diversity calculations, mixed-effects modeling, and interpretation.
+
+```{r}
+
+#| label: generate-example-data
+
+# Generate reproducible simulated data
+simulated <- simulate_rewilding(
+  params = sim_params,
+  seed = 123
+)
+
+# Extract the two datasets
+survey_data <- simulated$survey
+insect_data <- simulated$insects
+
+# Inspect the plot-level observations
 head(survey_data)
 
-```
-
-## Simulating Insect Abundance
-
-Shannon's diversity index requires information about both the number of observed taxa and their relative abundances.
-
-We simulate insect abundance across eight hypothetical taxa. The relative abundance distributions differ between planted and no-mow plots to illustrate how differences in insect community composition may affect Shannon diversity.
-
-The taxon labels and their relative abundances are illustrative. Actual diversity calculations will depend on the taxonomic resolution and insect observations available from the field surveys.
-
-```{r}
-
-#| label: simulate-insects
-
-# Hypothetical insect taxa
-taxa <- sprintf("Taxon_%02d", 1:8)
-
-# Relative abundance probabilities
-prob_planted <- c(
-  0.25, 0.18, 0.14, 0.12,
-  0.10, 0.09, 0.07, 0.05
-)
-
-prob_control <- c(
-  0.45, 0.25, 0.12, 0.08,
-  0.05, 0.03, 0.015, 0.005
-)
-
-# Allocate observed insects among taxa
-insect_data <- purrr::map_dfr(
-  seq_len(nrow(survey_data)),
-  function(i) {
-
-    visit <- survey_data[i, ]
-
-    probabilities <- if (
-      visit$treatment == "Planted"
-    ) prob_planted else prob_control
-
-    counts <- as.vector(rmultinom(
-      1,
-      size = visit$total_insects,
-      prob = probabilities
-    ))
-
-    tibble(
-      plot_id = visit$plot_id,
-      date = visit$date,
-      month = visit$month,
-      treatment = visit$treatment,
-      taxon = taxa,
-      count = counts
-    )
-  }
-) |>
-  filter(count > 0)
-
-# Inspect the insect observations
+# Inspect the insect taxon observations
 head(insect_data)
+
+# Confirm the expected number of observations
+survey_data |>
+  summarise(
+    n_plots = n_distinct(plot_id),
+    n_weeks = n_distinct(week),
+    n_observations = n()
+  )
 
 ```
 
@@ -231,10 +360,8 @@ head(insect_data)
 
 #| label: save-simulated-data
 
-# Create a data directory
 dir.create("data", showWarnings = FALSE)
 
-# Save simulated datasets
 write_csv(
   survey_data,
   "data/simulated_survey_data.csv"
@@ -245,19 +372,8 @@ write_csv(
   "data/simulated_insect_data.csv"
 )
 
-# Verify the dimensions
-dim(survey_data)
-dim(insect_data)
-
-# Confirm unique visits and count consistency
-survey_data |>
-  summarise(
-    n_plots = n_distinct(plot_id),
-    n_visits = n(),
-    n_weeks = n_distinct(week)
-  )
-
-insect_data |>
+# Confirm that insect counts agree with totals
+count_check <- insect_data |>
   group_by(plot_id, date) |>
   summarise(
     taxon_total = sum(count),
@@ -268,11 +384,1261 @@ insect_data |>
       select(plot_id, date, total_insects),
     by = c("plot_id", "date")
   ) |>
-  mutate(taxon_total = replace_na(taxon_total, 0)) |>
+  mutate(taxon_total = replace_na(taxon_total, 0))
+
+stopifnot(
+  all(count_check$taxon_total ==
+      count_check$total_insects)
+)
+
+```
+
+## Simulation Scenarios for Power Assessment
+
+In addition to the example dataset, we will evaluate the statistical performance of alternative sampling designs.
+
+The simulation-based assessment will vary the number of plots per management area, observation duration, and assumed visitation-rate ratio between areas.
+
+Each scenario will eventually be simulated repeatedly. The proposed statistical model will be fitted to each generated dataset to estimate statistical power, Type I error, and precision.
+
+These calculations are conditional on the assumed data-generating process and characterize comparisons between the two specific management areas rather than the ability to establish a causal planting effect.
+
+```{r}
+
+#| label: power-scenarios
+
+power_scenarios <- tidyr::crossing(
+  n_pairs = c(3, 5, 8),
+  visitation_rr = c(1.0, 1.3, 1.5, 2.0),
+  duration = c(5, 10, 15)
+)
+
+# Display planned scenarios
+power_scenarios
+
+# Example: generate one alternative scenario
+alternative_params <- sim_params
+
+alternative_params$n_pairs <- 8
+alternative_params$visitation_rr <- 1.5
+alternative_params$min_duration <- 10
+alternative_params$max_duration <- 10
+
+alternative_data <- simulate_rewilding(
+  params = alternative_params,
+  seed = 456
+)
+
+head(alternative_data$survey)
+
+```
+
+# Data Preparation and Quality Control
+
+Before conducting statistical analyses, we import and validate the simulated datasets.
+
+Each row in the survey dataset represents one observation of a particular plot on a particular date. The insect dataset contains the taxon-specific counts associated with those observations.
+
+We verify the number of plots, sampling weeks, treatment assignments, observation durations, missing values, and duplicate observations.
+
+In the actual study, missing observations must be distinguished from visits in which zero insects or pollinator visits were recorded. A missed survey should not automatically be assigned a count of zero.
+
+```{r}
+
+#| label: data-validation
+
+# Import the saved simulated datasets
+survey_data <- read_csv(
+  "data/simulated_survey_data.csv",
+  show_col_types = FALSE
+)
+
+insect_data <- read_csv(
+  "data/simulated_insect_data.csv",
+  show_col_types = FALSE
+)
+
+# Prepare the variables
+survey_data <- survey_data |>
+  mutate(
+    date = as.Date(date),
+    treatment = factor(
+      treatment,
+      levels = c("No-mow", "Planted")
+    ),
+    plot_id = factor(plot_id),
+    week_c = week - mean(week),
+    week_c2 = week_c^2
+  )
+
+insect_data <- insect_data |>
+  mutate(date = as.Date(date))
+
+# Summarize the study structure
+survey_data |>
+  group_by(treatment) |>
   summarise(
-    all_counts_match = all(
-      taxon_total == total_insects
+    plots = n_distinct(plot_id),
+    observations = n(),
+    weeks = n_distinct(week),
+    .groups = "drop"
+  )
+
+# Check missing values
+colSums(is.na(survey_data))
+
+# Check duplicate plot-date observations
+survey_data |>
+  count(plot_id, date) |>
+  filter(n > 1)
+
+# Check observation durations and counts
+stopifnot(
+  all(survey_data$observation_minutes > 0),
+  all(survey_data$pollinator_visits >= 0),
+  all(survey_data$total_insects >= 0),
+  all(survey_data$open_flowers >= 0),
+  !anyDuplicated(survey_data[c("plot_id", "date")]),
+  all(survey_data$area[
+    survey_data$treatment == "Planted"
+  ] == "West"),
+  all(survey_data$area[
+    survey_data$treatment == "No-mow"
+  ] == "East")
+)
+
+# Check insect counts
+stopifnot(
+  all(insect_data$count >= 0),
+  !anyDuplicated(
+    insect_data[c("plot_id", "date", "taxon")]
+  )
+)
+
+```
+
+## Descriptive Analysis of Pollinator Visitation
+
+We begin by examining the distribution of pollinator visitation counts across the two management conditions.
+
+Because observation durations can differ, we also calculate visitation rates standardized to a 10-minute observation period.
+
+These descriptive summaries help characterize the simulated observations before fitting a statistical model. However, differences in sample means alone do not account for repeated observations or between-plot variability.
+
+```{r}
+
+#| label: visitation-summary
+
+survey_data <- survey_data |>
+  mutate(
+    visits_per_10min =
+      pollinator_visits / observation_minutes * 10
+  )
+
+# Summaries by treatment
+visit_summary <- survey_data |>
+  group_by(treatment) |>
+  summarise(
+    n = n(),
+    mean_visits = mean(pollinator_visits),
+    sd_visits = sd(pollinator_visits),
+    mean_rate = mean(visits_per_10min),
+    median_rate = median(visits_per_10min),
+    proportion_zero = mean(pollinator_visits == 0),
+    .groups = "drop"
+  )
+
+visit_summary
+
+```
+
+```{r}
+
+#| label: visitation-boxplot
+
+ggplot(
+  survey_data,
+  aes(x = treatment, y = visits_per_10min,
+      fill = treatment)
+) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.12, alpha = 0.3) +
+  labs(
+    title = "Pollinator Visitation by Management Condition",
+    x = "Management Condition",
+    y = "Pollinator Visits per 10 Minutes"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+```{r}
+
+#| label: visitation-time-series
+
+weekly_summary <- survey_data |>
+  group_by(week, treatment) |>
+  summarise(
+    mean_rate = mean(visits_per_10min),
+    .groups = "drop"
+  )
+
+ggplot(
+  weekly_summary,
+  aes(x = week, y = mean_rate,
+      color = treatment)
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) +
+  labs(
+    title = "Weekly Pollinator Visitation",
+    x = "Sampling Week",
+    y = "Mean Visits per 10 Minutes",
+    color = "Management"
+  ) +
+  theme_minimal()
+
+```
+
+# Pollinator Visitation Analysis
+
+## Statistical Model
+
+Pollinator visitation is a count response, so a generalized linear mixed-effects model is appropriate.
+
+Let (Y\_{it}) represent the number of pollinator visits recorded in plot (i) during sampling week (t).
+
+We model the expected visitation count as
+
+$$
+\begin{aligned}
+\log(\mu_{it}) =\;& \beta_0 + \beta_1 T_i
++ \beta_2 w_t + \beta_3 w_t^2 \\
+&+ b_i + \log(E_{it}/10),
+\end{aligned}
+$$
+
+where:
+
+-   (\mu\_{it}) is the expected visitation count.
+-   (T_i=1) for planted plots and (T_i=0) for no-mow plots.
+-   (w_t) is centered sampling week.
+-   (b_i\sim N(0,\sigma\_b\^2)) is a plot-specific random intercept.
+-   (E\_{it}) is the observation duration in minutes.
+
+The logarithmic offset accounts for differences in observation duration, with the model expressed relative to a 10-minute sampling period.
+
+The primary hypotheses are
+
+$$
+H_0:\beta_1=0
+\qquad\text{versus}\qquad
+H_A:\beta_1\neq 0.
+$$
+
+Exponentiating the treatment coefficient gives the modeled visitation-rate ratio:
+
+$$
+RR = \exp(\beta_1).
+$$
+
+A rate ratio greater than one indicates higher expected visitation in the planted area, conditional on the model.
+
+Because planting status is confounded with management area, this comparison does not establish a causal effect of native planting.
+
+```{r}
+
+#| label: poisson-model
+
+poisson_model <- glmmTMB(
+  pollinator_visits ~
+    treatment + week_c + week_c2 +
+    offset(log(observation_minutes / 10)) +
+    (1 | plot_id),
+  family = poisson,
+  data = survey_data
+)
+
+summary(poisson_model)
+
+# Evaluate overdispersion
+performance::check_overdispersion(poisson_model)
+
+```
+
+## Negative Binomial Model
+
+The Poisson model assumes that the conditional mean and variance of the counts are equal.
+
+Ecological counts frequently exhibit greater variability than this assumption permits. If evidence of overdispersion is present, a negative binomial model may provide a better representation.
+
+For the negative binomial distribution used here,
+
+$$
+\operatorname{Var}(Y_{it}\mid b_i)
+=
+\mu_{it}+\frac{\mu_{it}^2}{\theta},
+$$
+
+where (\theta) is the dispersion parameter.
+
+Since the simulated observations were generated from a negative binomial distribution, we fit this model to demonstrate the intended alternative.
+
+```{r}
+
+#| label: negative-binomial-model
+
+nb_model <- glmmTMB(
+  pollinator_visits ~
+    treatment + week_c + week_c2 +
+    offset(log(observation_minutes / 10)) +
+    (1 | plot_id),
+  family = nbinom2,
+  data = survey_data
+)
+
+summary(nb_model)
+
+# Compare model fit
+AIC(poisson_model, nb_model)
+
+```
+
+## Model Diagnostics
+
+Before interpreting model coefficients, we evaluate the adequacy of the negative binomial model.
+
+Simulation-based residual diagnostics are used to assess departures from the fitted distribution, including overdispersion, unusually large numbers of zeros, and systematic residual patterns.
+
+We also examine whether residuals exhibit temporal autocorrelation within plots. A random intercept accounts for persistent between-plot differences but does not necessarily account for all within-plot temporal dependence.
+
+```{r}
+
+#| label: nb-diagnostics
+
+set.seed(123)
+
+nb_residuals <- DHARMa::simulateResiduals(
+  fittedModel = nb_model,
+  n = 1000
+)
+
+plot(nb_residuals)
+
+DHARMa::testDispersion(nb_residuals)
+
+DHARMa::testZeroInflation(nb_residuals)
+
+DHARMa::testUniformity(nb_residuals)
+
+# Check temporal correlation within plots
+survey_data$nb_residual <- nb_residuals$scaledResiduals
+
+plot_acf_data <- survey_data |>
+  arrange(plot_id, week) |>
+  group_by(plot_id) |>
+  summarise(
+    lag1_correlation = cor(
+      nb_residual[-n()],
+      nb_residual[-1]
+    ),
+    .groups = "drop"
+  )
+
+plot_acf_data
+
+```
+
+## Treatment Comparison
+
+We estimate the ratio of expected pollinator visitation rates between the planted and no-mow areas.
+
+A rate ratio of 1 indicates equal expected rates. A ratio above 1 indicates higher modeled rates in planted plots, while a ratio below 1 indicates lower modeled rates.
+
+We report the estimated rate ratio and a 95% confidence interval rather than relying exclusively on the hypothesis-test p-value.
+
+The confidence interval measures uncertainty under the fitted model and its assumptions. It does not account for the broader uncertainty introduced by management-area confounding.
+
+```{r}
+
+#| label: visitation-inference
+
+# Estimated marginal means on the link scale
+visit_emm <- emmeans(
+  nb_model,
+  ~ treatment,
+  component = "cond"
+)
+
+# Planted versus no-mow rate ratio
+visit_contrast <- contrast(
+  visit_emm,
+  method = list(
+    "Planted / No-mow" = c(-1, 1)
+  )
+)
+
+# Exponentiated results
+summary(
+  visit_contrast,
+  type = "response",
+  infer = c(TRUE, TRUE)
+)
+
+```
+
+```{r}
+
+#| label: visitation-predictions
+
+# Predictions for each treatment across the season
+prediction_data <- expand_grid(
+  treatment = factor(
+    c("No-mow", "Planted"),
+    levels = c("No-mow", "Planted")
+  ),
+  week = 1:26
+) |>
+  mutate(
+    week_c = week - mean(survey_data$week),
+    week_c2 = week_c^2,
+    observation_minutes = 10
+  )
+
+# Population-level predictions, excluding random effects
+prediction_data$predicted_visits <- predict(
+  nb_model,
+  newdata = prediction_data,
+  type = "response",
+  re.form = NA
+)
+
+ggplot(
+  prediction_data,
+  aes(
+    x = week,
+    y = predicted_visits,
+    color = treatment
+  )
+) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Predicted Pollinator Visitation Rates",
+    x = "Sampling Week",
+    y = "Predicted Visits per 10 Minutes",
+    color = "Management"
+  ) +
+  theme_minimal()
+
+```
+
+# Insect Biodiversity Analysis
+
+## Shannon Diversity Index
+
+Shannon's diversity index incorporates both the number of observed taxa and their relative abundances.
+
+For a particular plot and month, Shannon diversity is defined as
+
+$$
+H'=-\sum_{j=1}^{S}p_j\log(p_j),
+$$
+
+where (S) is the number of observed taxa and (p_j) is the proportion of observed insects belonging to taxon (j).
+
+Higher Shannon diversity generally indicates greater richness and/or more even abundances across taxa.
+
+To reduce problems associated with very small weekly samples, we pool insect counts within each plot and calendar month before calculating the index.
+
+Plot-months with no observed insects have undefined Shannon diversity and are recorded as missing. Plot-months with only one observed taxon have Shannon diversity equal to zero.
+
+```{r}
+
+#| label: calculate-shannon
+
+# Pool insect counts by plot, month, and taxon
+monthly_insects <- insect_data |>
+  group_by(plot_id, month, taxon) |>
+  summarise(
+    count = sum(count),
+    .groups = "drop"
+  )
+
+# Calculate Shannon diversity from taxon counts
+shannon_observed <- monthly_insects |>
+  group_by(plot_id, month) |>
+  summarise(
+    total_insects = sum(count),
+    taxa_richness = sum(count > 0),
+    shannon = vegan::diversity(
+      count,
+      index = "shannon"
+    ),
+    .groups = "drop"
+  )
+
+# Create complete plot-month records
+monthly_survey <- survey_data |>
+  group_by(plot_id, treatment, area, month) |>
+  summarise(
+    n_visits = n(),
+    total_minutes = sum(observation_minutes),
+    mean_week = mean(week),
+    .groups = "drop"
+  )
+
+# Merge diversity results, retaining months with zero insects
+diversity_data <- monthly_survey |>
+  left_join(
+    shannon_observed,
+    by = c("plot_id", "month")
+  ) |>
+  mutate(
+    total_insects = replace_na(total_insects, 0L),
+    taxa_richness = replace_na(taxa_richness, 0L),
+    effective_taxa = exp(shannon)
+  )
+
+head(diversity_data)
+
+```
+
+```{r}
+
+#| label: diversity-sampling-check
+
+diversity_data |>
+  group_by(treatment) |>
+  summarise(
+    median_insects = median(total_insects),
+    mean_insects = mean(total_insects),
+    zero_insect_months = sum(total_insects == 0),
+    .groups = "drop"
+  )
+
+overall_median <- median(diversity_data$total_insects)
+
+overall_median
+
+if (overall_median < 10) {
+  message(
+    "Median insect count is below 10. ",
+    "Pool into two-month sampling periods."
+  )
+} else {
+  message(
+    "Monthly grouping meets the prespecified ",
+    "minimum median count criterion."
+  )
+}
+
+```
+
+```{r}
+
+#| label: diversity-period-selection
+
+if (overall_median < 10) {
+
+  # May-Jun, Jul-Aug, Sep-Oct
+  period_data <- survey_data |>
+    mutate(
+      period = case_when(
+        month %in% c("2027-05", "2027-06") ~ "May-Jun",
+        month %in% c("2027-07", "2027-08") ~ "Jul-Aug",
+        month %in% c("2027-09", "2027-10") ~ "Sep-Oct"
+      )
     )
+
+  taxon_period <- insect_data |>
+    left_join(
+      period_data |>
+        select(plot_id, date, period),
+      by = c("plot_id", "date")
+    ) |>
+    group_by(plot_id, period, taxon) |>
+    summarise(
+      count = sum(count),
+      .groups = "drop"
+    )
+
+  diversity_response <- taxon_period |>
+    group_by(plot_id, period) |>
+    summarise(
+      shannon = vegan::diversity(count),
+      total_insects = sum(count),
+      .groups = "drop"
+    )
+
+  period_lookup <- period_data |>
+    group_by(plot_id, treatment, period) |>
+    summarise(
+      mean_week = mean(week),
+      .groups = "drop"
+    )
+
+} else {
+
+  diversity_response <- shannon_observed |>
+    rename(period = month) |>
+    select(plot_id, period, shannon, total_insects)
+
+  period_lookup <- monthly_survey |>
+    rename(period = month) |>
+    select(plot_id, treatment, period, mean_week)
+
+}
+
+# Keep all plot-period combinations, including zero counts
+diversity_analysis <- period_lookup |>
+  left_join(
+    diversity_response,
+    by = c("plot_id", "period")
+  ) |>
+  mutate(
+    total_insects = replace_na(total_insects, 0L),
+    week_c = mean_week - mean(survey_data$week)
+  )
+
+# Review analysis dataset
+diversity_analysis |>
+  group_by(treatment) |>
+  summarise(
+    observations = n(),
+    valid_shannon = sum(!is.na(shannon)),
+    .groups = "drop"
   )
 
 ```
+
+```{r}
+
+#| label: diversity-visualization
+
+ggplot(
+  diversity_analysis,
+  aes(
+    x = treatment,
+    y = shannon,
+    fill = treatment
+  )
+) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.12, alpha = 0.5) +
+  labs(
+    title = "Insect Shannon Diversity by Management",
+    x = "Management Condition",
+    y = "Shannon Diversity Index"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+## Linear Mixed-Effects Model
+
+We use a linear mixed-effects model to compare mean Shannon diversity between the two management conditions while accounting for repeated measurements within plots.
+
+Let (H'\_{it}) denote Shannon diversity for plot (i) during sampling period (t).
+
+The proposed model is
+
+$$
+H'_{it}=\beta_0+\beta_1T_i+
+\beta_2w_t+b_i+\epsilon_{it},
+$$
+
+where (T_i) indicates management condition, (w_t) represents centered sampling time, (b_i) is a plot-specific random intercept, and (\epsilon\_{it}) is the residual error.
+
+The primary hypotheses are
+
+$$
+H_0:\beta_1=0
+\qquad\text{versus}\qquad
+H_A:\beta_1\neq0.
+$$
+
+The treatment coefficient represents the modeled difference in mean Shannon diversity between the planted and no-mow study areas.
+
+We will evaluate residual normality, constant variance, and model stability before interpreting the results.
+
+```{r}
+
+#| label: shannon-model
+
+shannon_model <- lmer(
+  shannon ~
+    treatment + week_c +
+    (1 | plot_id),
+  data = diversity_analysis,
+  REML = TRUE,
+  na.action = na.omit
+)
+
+summary(shannon_model)
+
+# Check for singularity
+lme4::isSingular(shannon_model)
+
+# Model diagnostics
+plot(shannon_model)
+
+qqnorm(resid(shannon_model))
+qqline(resid(shannon_model))
+
+```
+
+```{r}
+
+#| label: shannon-inference
+
+# Estimated mean diversity by treatment
+shannon_emm <- emmeans(
+  shannon_model,
+  ~ treatment
+)
+
+summary(shannon_emm)
+
+# Planted minus no-mow
+contrast(
+  shannon_emm,
+  method = list(
+    "Planted - No-mow" = c(-1, 1)
+  ),
+  infer = c(TRUE, TRUE)
+)
+
+```
+
+# Supporting and Exploratory Analyses
+
+## Pollinator Visitation Adjusted for Floral Abundance
+
+The primary visitation model does not adjust for open-flower counts because increased floral abundance may be one mechanism through which native planting influences pollinator activity.
+
+As a secondary exploratory analysis, we add the logarithm of the open-flower count plus one as a covariate.
+
+This analysis asks whether differences in expected visitation remain after statistically accounting for observed floral abundance.
+
+The adjusted treatment coefficient should not be interpreted as a causal direct effect. Furthermore, this covariate-adjusted approach does not impose a strictly proportional relationship between flower count and pollinator visits.
+
+```{r}
+
+#| label: flower-adjusted-model
+
+flower_model <- glmmTMB(
+  pollinator_visits ~
+    treatment +
+    log(open_flowers + 1) +
+    week_c + week_c2 +
+    offset(log(observation_minutes / 10)) +
+    (1 | plot_id),
+  family = nbinom2,
+  data = survey_data
+)
+
+summary(flower_model)
+
+# Adjusted treatment rate ratio
+flower_emm <- emmeans(
+  flower_model,
+  ~ treatment,
+  component = "cond"
+)
+
+summary(
+  contrast(
+    flower_emm,
+    method = list(
+      "Planted / No-mow" = c(-1, 1)
+    )
+  ),
+  type = "response",
+  infer = c(TRUE, TRUE)
+)
+
+```
+
+## Season-Level Plot Comparisons
+
+For each plot, we calculate the mean pollinator visitation rate over the season and Shannon diversity using all insects recorded in that plot.
+
+We then compare the five planted plots with the five no-mow plots using two-sample t-tests.
+
+These comparisons provide a simpler analysis that summarizes the overall seasonal difference between the two areas.
+
+They do not describe seasonal patterns or resolve confounding between planting status and management area.
+
+```{r}
+
+#| label: season-level-analysis
+
+# Seasonal visitation rate per plot
+season_visits <- survey_data |>
+  group_by(plot_id, treatment) |>
+  summarise(
+    mean_visit_rate =
+      sum(pollinator_visits) /
+      sum(observation_minutes) * 10,
+    .groups = "drop"
+  )
+
+# Seasonal insect diversity per plot
+season_diversity <- insect_data |>
+  group_by(plot_id, taxon) |>
+  summarise(
+    count = sum(count),
+    .groups = "drop"
+  ) |>
+  group_by(plot_id) |>
+  summarise(
+    season_shannon = vegan::diversity(count),
+    .groups = "drop"
+  )
+
+# Combine plot-level results
+season_data <- season_visits |>
+  left_join(
+    season_diversity,
+    by = "plot_id"
+  )
+
+season_data
+
+# Student's two-sample t-tests (8 df)
+t.test(
+  mean_visit_rate ~ treatment,
+  data = season_data,
+  var.equal = TRUE
+)
+
+t.test(
+  season_shannon ~ treatment,
+  data = season_data,
+  var.equal = TRUE
+)
+
+```
+
+## Diversity Comparisons at Equal Sample Coverage
+
+Observed Shannon diversity may increase simply because more insects were recorded.
+
+To supplement the primary biodiversity analysis, we use coverage-based rarefaction and extrapolation to compare diversity under more comparable sampling completeness.
+
+We evaluate Hill diversity numbers of orders 0, 1, and 2:
+
+-   Order 0 measures taxonomic richness.
+-   Order 1 is the exponential of Shannon diversity.
+-   Order 2 is the inverse Simpson concentration.
+
+These comparisons are exploratory and do not replace the plot-level mixed-effects analysis.
+
+```{r}
+
+#| label: coverage-diversity
+
+# Pool taxon counts across plots within treatment
+coverage_counts <- insect_data |>
+  group_by(treatment, taxon) |>
+  summarise(
+    count = sum(count),
+    .groups = "drop"
+  ) |>
+  pivot_wider(
+    names_from = taxon,
+    values_from = count,
+    values_fill = 0
+  )
+
+# Convert to abundance vectors for iNEXT
+coverage_list <- list(
+  "No-mow" = as.numeric(
+    coverage_counts |>
+      filter(treatment == "No-mow") |>
+      select(-treatment)
+  ),
+  "Planted" = as.numeric(
+    coverage_counts |>
+      filter(treatment == "Planted") |>
+      select(-treatment)
+  )
+)
+
+# Coverage-based diversity analysis
+coverage_results <- iNEXT(
+  coverage_list,
+  q = c(0, 1, 2),
+  datatype = "abundance",
+  nboot = 100
+)
+
+# Plot diversity against sample coverage
+ggiNEXT(
+  coverage_results,
+  type = 3
+) +
+  theme_minimal()
+
+```
+
+# Simulation-Based Power and Precision Assessment
+
+## Overview
+
+We now use the previously defined data-generating function to evaluate the statistical performance of alternative sampling designs.
+
+The following factors will vary:
+
+-   Number of plots per management condition: 3, 5, or 8.
+-   Observation duration: 5, 10, or 15 minutes.
+-   Assumed visitation-rate ratio: 1.0, 1.3, 1.5, or 2.0.
+
+For each scenario, we generate multiple independent datasets and fit the proposed negative binomial GLMM.
+
+Statistical power is estimated as the proportion of simulation replicates in which the two-sided treatment test rejects the null hypothesis at the 0.05 significance level.
+
+For scenarios with a true rate ratio of 1, the rejection proportion estimates the empirical Type I error rate rather than power.
+
+We also evaluate the average estimated rate ratio, confidence interval coverage, and confidence interval width.
+
+All calculations are conditional on the simulation assumptions. They do not represent the ability to identify a general causal effect of native planting because planting status remains confounded with management area.
+
+```{r}
+
+#| label: power-function
+
+# Fit the negative binomial model to one simulated dataset
+analyze_simulation <- function(data) {
+
+  data <- data |>
+    mutate(
+      week_c = week - mean(week),
+      week_c2 = week_c^2,
+      treatment = factor(
+        treatment,
+        levels = c("No-mow", "Planted")
+      )
+    )
+
+  fit <- tryCatch(
+    suppressWarnings(
+      glmmTMB(
+        pollinator_visits ~
+          treatment + week_c + week_c2 +
+          offset(log(observation_minutes / 10)) +
+          (1 | plot_id),
+        family = nbinom2,
+        data = data
+      )
+    ),
+    error = function(e) NULL
+  )
+
+  # Record unsuccessful fits
+  if (is.null(fit)) {
+    return(tibble(
+      estimate = NA_real_,
+      se = NA_real_,
+      p_value = NA_real_,
+      converged = FALSE
+    ))
+  }
+
+  # Check numerical convergence
+  valid_fit <- isTRUE(fit$sdr$pdHess) &&
+    fit$fit$convergence == 0
+
+  if (!valid_fit) {
+    return(tibble(
+      estimate = NA_real_,
+      se = NA_real_,
+      p_value = NA_real_,
+      converged = FALSE
+    ))
+  }
+
+  # Extract treatment coefficient
+  coefs <- summary(fit)$coefficients$cond
+
+  if (!"treatmentPlanted" %in% rownames(coefs)) {
+    return(tibble(
+      estimate = NA_real_,
+      se = NA_real_,
+      p_value = NA_real_,
+      converged = FALSE
+    ))
+  }
+
+  beta <- coefs["treatmentPlanted", "Estimate"]
+  se <- coefs["treatmentPlanted", "Std. Error"]
+
+  if (!is.finite(beta) || !is.finite(se) || se <= 0) {
+    return(tibble(
+      estimate = NA_real_,
+      se = NA_real_,
+      p_value = NA_real_,
+      converged = FALSE
+    ))
+  }
+
+  # Two-sided Wald test
+  z_value <- beta / se
+  p_value <- 2 * pnorm(-abs(z_value))
+
+  tibble(
+    estimate = beta,
+    se = se,
+    p_value = p_value,
+    converged = TRUE
+  )
+}
+
+```
+
+```{r}
+
+#| label: run-power-simulation
+#| cache: true
+
+set.seed(2027)
+
+# Preliminary runs; increase for final assessment
+n_sim <- 10
+
+run_one_scenario <- function(
+    n_pairs, visitation_rr, duration,
+    n_sim, base_params
+) {
+
+  params <- base_params
+
+  params$n_pairs <- n_pairs
+  params$visitation_rr <- visitation_rr
+  params$min_duration <- duration
+  params$max_duration <- duration
+
+  purrr::map_dfr(
+    seq_len(n_sim),
+    function(rep_id) {
+
+      simulated <- simulate_rewilding(
+        params = params
+      )
+
+      result <- analyze_simulation(
+        simulated$survey
+      )
+
+      result |>
+        mutate(replicate = rep_id)
+    }
+  ) |>
+    mutate(
+      n_pairs = n_pairs,
+      visitation_rr = visitation_rr,
+      duration = duration
+    )
+}
+
+# Run all scenarios
+power_results <- purrr::pmap_dfr(
+  power_scenarios,
+  function(n_pairs, visitation_rr, duration) {
+    run_one_scenario(
+      n_pairs = n_pairs,
+      visitation_rr = visitation_rr,
+      duration = duration,
+      n_sim = n_sim,
+      base_params = sim_params
+    )
+  }
+)
+
+head(power_results)
+
+```
+
+```{r}
+
+#| label: summarize-power
+
+power_summary <- power_results |>
+  mutate(
+    significant = p_value < 0.05,
+    rate_ratio = exp(estimate),
+    ci_lower = exp(estimate - 1.96 * se),
+    ci_upper = exp(estimate + 1.96 * se),
+    ci_width = ci_upper - ci_lower,
+    covered = ci_lower <= visitation_rr &
+      ci_upper >= visitation_rr
+  ) |>
+  group_by(n_pairs, visitation_rr, duration) |>
+  summarise(
+    n_sim = n(),
+    successful_fits = sum(converged),
+    convergence_rate = mean(converged),
+    rejection_rate = if (all(is.na(significant))) {
+      NA_real_
+    } else {
+      mean(significant, na.rm = TRUE)
+    },
+    mean_estimated_rr = mean(
+      rate_ratio, na.rm = TRUE
+    ),
+    mean_ci_width = mean(
+      ci_width, na.rm = TRUE
+    ),
+    coverage = mean(
+      covered, na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) |>
+  mutate(
+    metric = if_else(
+      visitation_rr == 1,
+      "Type I error",
+      "Power"
+    )
+  )
+
+power_summary
+
+```
+
+```{r}
+
+#| label: power-plot
+
+power_summary |>
+  filter(visitation_rr > 1) |>
+  ggplot(
+    aes(
+      x = n_pairs,
+      y = rejection_rate,
+      color = factor(visitation_rr),
+      group = factor(visitation_rr)
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(
+    ~ duration,
+    labeller = label_both
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1)
+  ) +
+  labs(
+    title = "Estimated Power Across Sampling Designs",
+    x = "Number of Plots per Management Condition",
+    y = "Estimated Statistical Power",
+    color = "Assumed Rate Ratio"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+
+#| label: type-one-error
+
+type1_results <- power_summary |>
+  filter(visitation_rr == 1)
+
+type1_results
+
+ggplot(
+  type1_results,
+  aes(
+    x = n_pairs,
+    y = rejection_rate,
+    color = factor(duration),
+    group = factor(duration)
+  )
+) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_hline(
+    yintercept = 0.05,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Empirical Type I Error Rate",
+    x = "Plots per Management Condition",
+    y = "Proportion of Null Hypotheses Rejected",
+    color = "Duration (min)"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+
+#| label: precision-plot
+
+power_summary |>
+  filter(visitation_rr > 1) |>
+  ggplot(
+    aes(
+      x = n_pairs,
+      y = mean_ci_width,
+      color = factor(visitation_rr),
+      group = factor(visitation_rr)
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ duration, labeller = label_both) +
+  labs(
+    title = "Confidence Interval Width by Sampling Design",
+    x = "Plots per Management Condition",
+    y = "Mean Rate-Ratio CI Width",
+    color = "Assumed Rate Ratio"
+  ) +
+  theme_minimal()
+
+```
+
+# Interpretation and Reporting
+
+## Summary of the Analysis
+
+This tutorial demonstrated a reproducible statistical workflow for the Long Creek Park rewilding study using simulated observations.
+
+The primary analyses consisted of:
+
+1.  A generalized linear mixed-effects model comparing pollinator visitation rates between planted and no-mow plots.
+2.  A linear mixed-effects model comparing insect Shannon diversity between management conditions.
+
+The workflow also demonstrated exploratory analyses involving floral abundance, season-level comparisons, diversity comparisons at equal sample coverage, and simulation-based assessments of power and precision.
+
+## Interpreting the Results
+
+The results produced throughout this tutorial are based entirely on simulated data. They demonstrate how to estimate differences, evaluate uncertainty, assess model assumptions, and communicate statistical findings.
+
+They do not provide evidence that rewilding has increased insect biodiversity or pollinator visitation at Long Creek Park.
+
+When actual observations become available, the simulated datasets should be replaced with the collected data, and the analyses should be repeated following the procedures specified in the Statistical Analysis Plan.
+
+## Study Limitations
+
+Several limitations should be considered when interpreting the eventual study results.
+
+First, native planting occurs only in the western management area, while unplanted no-mow plots are located in the eastern area. Consequently, planting status is confounded with management area.
+
+Second, repeated observations of the same plots do not constitute additional independent treatment replicates.
+
+Third, nearby plots may not be independent because pollinators can move between sampling areas.
+
+Finally, differences in weather, observation conditions, taxonomic identification, and sampling effort may influence observed insect counts.
+
+Statistical results should therefore emphasize estimated differences between the two specific study areas, uncertainty, and ecological relevance rather than causal conclusions about native planting.
+
+## Reproducibility
+
+The simulation parameters, random seeds, statistical models, and analysis procedures are documented in this Quarto file.
+
+The tutorial is intended to serve as a starting point for analyzing the future observational data. Any changes to the original analysis plan should be documented and justified.
