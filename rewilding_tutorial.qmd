@@ -1,7 +1,7 @@
 ---
 title: "Rewilding Project: Statistical Analysis Tutorial"
 subtitle: "A Reproducible R Tutorial Using Simulated Data"
-author: "Ryan and Jacob"
+author: "Ryan Mersereau & Jacob Britt"
 format:
   pdf:
     toc: true
@@ -1601,6 +1601,8 @@ power_summary |>
   theme_minimal()
 
 ```
+
+## Was thinking we could have some instructions for interpretation and reporting here??
 
 # Interpretation and Reporting
 
