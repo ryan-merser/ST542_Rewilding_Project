@@ -83,7 +83,7 @@ library(tictoc)
 tic.clearlog()
 
 # Consistent colors for the two management conditions
-treatment_colors <- c("No-mow" = "cyan", "Planted" = "tomato")
+treatment_colors <- c("No-mow" = "steelblue", "Planted" = "tomato")
 theme_set(theme_minimal(base_size = 11) + theme(legend.position = "top"))
 ```
 
@@ -855,7 +855,7 @@ A mean lag-1 correlation near zero suggests the random intercept is sufficient. 
 
 We estimate the ratio of expected pollinator visitation rates between the planted and no-mow areas, and report it with a 95% confidence interval rather than relying exclusively on the hypothesis-test p-value.
 
-By default, `emmeans` treats a `glmmTMB` estimate as if its standard error were known exactly (`df = Inf`, a *z*-test). With only five plots per condition, that gives intervals that are too narrow and p-values that are too small. In our simulations, the default test rejected a true null hypothesis about 9% of the time rather than 5%. We therefore use a *t* reference with $10 - 2 = 8$ degrees of freedom.
+By default, `emmeans` treats a `glmmTMB` estimate as if its standard error were known exactly (`df = Inf`, a *z*-test). With only five plots per condition, that gives intervals that are too narrow and p-values that are too small. In our simulations, the default test rejected a true null hypothesis noticeably more often than 5% of the time (see the Type I error results in @sec-power). We therefore use a *t* reference with $10 - 2 = 8$ degrees of freedom.
 
 The confidence interval measures uncertainty under the fitted model and its assumptions. It does not account for the broader uncertainty introduced by management-area confounding.
 
@@ -1126,55 +1126,75 @@ analyze_simulation <- function(sim) {
 
 ## Running the Simulation
 
-Before the full run, five replicates of the planned design are timed to project the total run time. Each scenario is then run on a separate processor core, and `tictoc` reports how long the whole simulation took. Results are saved to a file named from the settings, so re-rendering reuses them until any setting or function changes. Delete the `power_cache` folder to force a fresh run.
+Before the full run, five replicates of the planned design are timed to project the total run time. The scenarios are then split across processor cores, and `tictoc` reports how long the whole simulation took.
 
-At about 1 second per replicate, the full grid with `n_sim = 500` (18,000 replicates) takes roughly 5 hours on one core, or a little over an hour on four cores.
+Each scenario's results are saved to its own file as soon as that scenario finishes, in a folder named from the settings. If the run is interrupted (an error, a crash, or the computer going to sleep), rendering again picks up where it stopped and runs only the unfinished scenarios. Once every scenario is saved, re-rendering reuses the saved results until any setting or function changes. Delete the `power_cache` folder to force a fresh run.
+
+The full grid with `n_sim = 500` is 18,000 replicates. Run time grows in proportion to `n_sim`, so a quick run at a small `n_sim` gives a good estimate of the full run.
 
 ```{r}
 #| label: run-power-simulation
 
-n_sim <- 20   # preliminary; use 500 for the final assessment
+n_sim <- 500   # final assessment; use 20-50 for quick checks while editing
 n_cores <- max(1, parallel::detectCores() - 1)
 
-run_one_scenario <- function(i, scenarios, base_params, n_sim) {
+run_one_scenario <- function(i, scenarios, base_params, n_sim, cache_dir) {
   s <- scenarios[i, ]
   params <- modifyList(base_params, list(
     n_pairs = s$n_pairs, visitation_rr = s$visitation_rr,
     evenness_shift = s$evenness_shift, other_rr = s$other_rr,
     min_duration = s$duration, max_duration = s$duration))
   set.seed(2027 + i)
-  map(seq_len(n_sim), \(r) analyze_simulation(simulate_rewilding(params))) |>
+  # rep numbers the replicates; because each scenario has a fixed seed, the
+  # first k replicates are identical to a run with n_sim = k
+  out <- map(seq_len(n_sim), \(r) analyze_simulation(simulate_rewilding(params)) |>
+               mutate(rep = r)) |>
     list_rbind() |>
     mutate(scenario = i)
+  # Save each scenario as soon as it finishes, so an interrupted run can resume
+  saveRDS(out, file.path(cache_dir, sprintf("scenario_%02d.rds", i)))
+  out
 }
 
+# Saved results live in a folder named from every setting and function,
+# so changing any of them starts a fresh run
 cache_inputs <- list(n_sim, power_scenarios, sim_params, functional_groups,
                      deparse(simulate_rewilding), deparse(analyze_simulation),
-                     deparse(make_diversity_data))
-dir.create("power_cache", showWarnings = FALSE)
-cache_file <- file.path("power_cache", paste0("power_", rlang::hash(cache_inputs), ".rds"))
+                     deparse(make_diversity_data), deparse(run_one_scenario))
+cache_dir <- file.path("power_cache", rlang::hash(cache_inputs))
+dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+cache_dir <- normalizePath(cache_dir)   # full path, so the worker processes find it
 
-# Pilot timing: run a few replicates of the planned design first and
-# project how long the full grid will take before committing to it.
-tic("Pilot: 5 replicates")
-pilot_start <- Sys.time()
-invisible(replicate(5, analyze_simulation(simulate_rewilding(sim_params)), simplify = FALSE))
-sec_per_rep <- as.numeric(difftime(Sys.time(), pilot_start, units = "secs")) / 5
-toc(log = TRUE)
+scenario_files <- file.path(cache_dir, sprintf("scenario_%02d.rds", seq_len(nrow(power_scenarios))))
+run_time_file <- file.path(cache_dir, "run_time_seconds.txt")
+todo <- which(!file.exists(scenario_files))
 
-total_reps <- nrow(power_scenarios) * n_sim
-cat(sprintf(
-  "%d replicates at about %.2f sec each: roughly %.1f minutes on %d core(s).\n",
-  total_reps, sec_per_rep, total_reps * sec_per_rep / 60 / n_cores, n_cores))
-
-if (file.exists(cache_file)) {
-  power_results <- readRDS(cache_file)
-  cat("Loaded saved results. The original run took",
-      attr(power_results, "run_time"), "\n")
+if (length(todo) == 0) {
+  cat(sprintf("Loaded saved results for all %d scenarios (n_sim = %d). The original run took %.1f minutes.\n",
+              nrow(power_scenarios), n_sim, as.numeric(readLines(run_time_file)) / 60))
 } else {
+  if (length(todo) < nrow(power_scenarios)) {
+    cat(sprintf("Resuming: %d of %d scenarios already saved.\n",
+                nrow(power_scenarios) - length(todo), nrow(power_scenarios)))
+  }
+
+  # Pilot timing: run a few replicates of the planned design first and
+  # project how long the remaining scenarios will take
+  tic("Pilot: 5 replicates")
+  pilot_start <- Sys.time()
+  invisible(replicate(5, analyze_simulation(simulate_rewilding(sim_params)), simplify = FALSE))
+  sec_per_rep <- as.numeric(difftime(Sys.time(), pilot_start, units = "secs")) / 5
+  toc(log = TRUE)
+
+  workers <- min(n_cores, length(todo))
+  total_reps <- length(todo) * n_sim
+  cat(sprintf(
+    "%d replicates at about %.2f sec each: roughly %.1f minutes on %d core(s).\n",
+    total_reps, sec_per_rep, total_reps * sec_per_rep / 60 / workers, workers))
+
   tic("Power simulation")
   run_start <- Sys.time()
-  cl <- parallel::makeCluster(n_cores)   # works on Windows, Mac, and Linux
+  cl <- parallel::makeCluster(workers)   # works on Windows, Mac, and Linux
   parallel::clusterEvalQ(cl, {
     suppressPackageStartupMessages({
       library(tidyverse); library(lme4); library(glmmTMB); library(emmeans)
@@ -1183,18 +1203,22 @@ if (file.exists(cache_file)) {
   parallel::clusterExport(cl, c(
     "simulate_rewilding", "group_probs", "split_among_groups", "functional_groups",
     "analyze_simulation", "make_diversity_data", "shannon_rarefied"))
-  power_results <- parallel::parLapply(
-    cl, seq_len(nrow(power_scenarios)), run_one_scenario,
-    scenarios = power_scenarios, base_params = sim_params, n_sim = n_sim
-  ) |>
-    list_rbind()
+  # parLapplyLB hands out one scenario at a time, so a core that finishes
+  # early (small designs are faster) picks up the next scenario
+  invisible(parallel::parLapplyLB(
+    cl, todo, run_one_scenario,
+    scenarios = power_scenarios, base_params = sim_params,
+    n_sim = n_sim, cache_dir = cache_dir))
   parallel::stopCluster(cl)
   toc(log = TRUE)
 
-  # Store the run time with the results so cached renders can report it
-  attr(power_results, "run_time") <- format(round(Sys.time() - run_start, 1))
-  saveRDS(power_results, cache_file)
+  # Record the run time (added to any earlier session's time if resumed)
+  elapsed <- as.numeric(difftime(Sys.time(), run_start, units = "secs"))
+  if (file.exists(run_time_file)) elapsed <- elapsed + as.numeric(readLines(run_time_file))
+  writeLines(as.character(elapsed), run_time_file)
 }
+
+power_results <- map(scenario_files, readRDS) |> list_rbind()
 
 power_results <- power_scenarios |>
   mutate(scenario = row_number()) |>
@@ -1231,7 +1255,7 @@ power_summary <- power_results |>
 
 ### Type I error
 
-Rows with no true effect. With `r n_sim` replicates per scenario, a correctly sized test should reject between about 0% and `r round(100 * (0.05 + 2 * sqrt(0.05 * 0.95 / n_sim)))`% of the time; with 500 replicates the band narrows to roughly 3–7%.
+Rows with no true effect. With `r n_sim` replicates per scenario, a correctly sized test should reject between about `r round(100 * max(0, 0.05 - 2 * sqrt(0.05 * 0.95 / n_sim)))`% and `r round(100 * (0.05 + 2 * sqrt(0.05 * 0.95 / n_sim)))`% of the time in each row. Values outside that band suggest the test is too liberal (above) or too conservative (below).
 
 ```{r}
 #| label: type-one-error
@@ -1245,6 +1269,18 @@ power_summary |>
                   "Visits: t-test (used)", "Shannon: observed", "Shannon: rarefied"))
 ```
 
+```{r}
+#| label: type-one-error-average
+
+type1_avg <- power_results |>
+  filter(effect == "None") |>
+  summarise(z = mean(q2_p_z < 0.05, na.rm = TRUE),
+            t = mean(q2_p < 0.05, na.rm = TRUE),
+            n = sum(!is.na(q2_p)))
+```
+
+Pooled over all `r type1_avg$n` no-effect replicates, the default *z*-test rejected a true null hypothesis `r round(100 * type1_avg$z, 1)`% of the time and the *t*-test (degrees of freedom = number of plots − 2) rejected it `r round(100 * type1_avg$t, 1)`% of the time (nominal 5%).
+
 ### Power
 
 ```{r}
@@ -1253,7 +1289,7 @@ power_summary |>
 #| fig-width: 8
 #| fig-height: 6
 
-plot_colors <- c("3" = "forestgreen", "5" = "cyan", "8" = "tomato")
+plot_colors <- c("3" = "forestgreen", "5" = "steelblue", "8" = "tomato")
 
 power_summary |>
   pivot_longer(c(q2_power, q1r_power), names_to = "outcome", values_to = "power") |>
@@ -1302,6 +1338,37 @@ power_summary |>
 ```
 
 The "CI upper / lower" column describes a typical interval: a value of 2.5 means the upper limit is 2.5 times the lower limit. Coverage near 0.95 indicates the *t*-based intervals are well calibrated.
+
+### Monte Carlo stability
+
+Each power estimate is a proportion from `r n_sim` replicates, so it carries its own simulation error. Its Monte Carlo standard error is $\sqrt{p(1-p)/n_{sim}}$: at most `r round(100 * sqrt(0.25 / n_sim), 1)` percentage points (at 50% power) with `r n_sim` replicates.
+
+Because each scenario uses a fixed seed, the first $k$ replicates are exactly what a run with `n_sim = k` would have produced. The table below recomputes power from the first 20%, 50%, and 100% of the replicates (10-minute visits). If the last two columns differ by more than a few points, the estimates have not settled and more replicates would help.
+
+```{r}
+#| label: monte-carlo-stability
+
+checkpoints <- unique(round(n_sim * c(0.2, 0.5, 1)))
+
+stability <- map(checkpoints, \(k) power_results |>
+    filter(rep <= k, duration == 10, effect != "None") |>
+    group_by(n_pairs, effect) |>
+    summarise(`Visits` = mean(q2_p < 0.05, na.rm = TRUE),
+              `Shannon (rar.)` = mean(q1r_p < 0.05, na.rm = TRUE),
+              .groups = "drop") |>
+    mutate(n_sim = k)) |>
+  list_rbind() |>
+  pivot_longer(c(`Visits`, `Shannon (rar.)`), names_to = "outcome", values_to = "power") |>
+  pivot_wider(names_from = n_sim, values_from = power, names_prefix = "n = ")
+
+full_col <- paste("n =", n_sim)
+stability |>
+  mutate(mc_se = sqrt(.data[[full_col]] * (1 - .data[[full_col]]) / n_sim)) |>
+  arrange(outcome, n_pairs, effect) |>
+  knitr::kable(digits = 2, caption = "Estimated power by number of replicates used",
+               col.names = c("Plots", "Effect", "Outcome", paste("n =", checkpoints),
+                             "Monte Carlo SE"))
+```
 
 ## Run Times
 
@@ -1377,4 +1444,5 @@ Statistical results should therefore emphasize estimated differences between the
 The simulation parameters, random seeds, statistical models, and analysis procedures are documented in this Quarto file.
 
 The tutorial is intended to serve as a starting point for analyzing the future observational data. Any changes to the original analysis plan should be documented and justified.
+
 
